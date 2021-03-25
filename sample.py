@@ -8,6 +8,7 @@ positive = 0
 negative = 0
 neutral = 0
 polarity = 0
+list_items = []
 f = open('credential.json')
 data = json.load(f)
 
