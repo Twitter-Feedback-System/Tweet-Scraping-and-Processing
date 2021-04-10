@@ -109,18 +109,19 @@ class SentimentAnalysis:
         like_count_normalized, retweet_count_normalized = self.scaling([like_count, retweet_count])
 
         polarity = ''
+        polarity_score = round(1 + like_count_normalized + retweet_count_normalized, 2)
         analysis = TextBlob(clean_tweet)
         if(analysis.sentiment.polarity == 0):
-            self.polarity['neutral'] += (1 + like_count_normalized + retweet_count_normalized)
+            self.polarity['neutral'] += polarity_score
             polarity = 'neutral'
         elif(analysis.sentiment.polarity < 0):
-            self.polarity['negative'] += (1 + like_count_normalized + retweet_count_normalized)
+            self.polarity['negative'] += polarity_score
             polarity = 'negative'
         elif(analysis.sentiment.polarity > 0):
-            self.polarity['positive'] += (1 + like_count_normalized + retweet_count_normalized)
+            self.polarity['positive'] += polarity_score
             polarity = 'positive'
 
-        return polarity
+        return polarity, polarity_score
     
     def send_response(self, tweet):
         data = {
@@ -160,9 +161,8 @@ class SentimentAnalysis:
                     'text': tweet.full_text or tweet.text,
                     'embed_url': f'https://twitter.com/{tweet.user.screen_name}/status/{tweet.id}'
                 }
-                polarity = self.calc_polarity(row)
-                row['polarity'] = polarity
-                
+                polarity, polarity_score = self.calc_polarity(row)
+                row['polarity'], row['polarity_score'] = polarity, polarity_score
                 new_rows = pd.DataFrame([row], index=[i])
                 df = pd.concat([df, new_rows])
                 self.send_response(row)
@@ -177,7 +177,7 @@ class SentimentAnalysis:
         print('\nCompleted')
         self.save_files(df)
 
-sio = socketio.Server(async_mode='eventlet', allow_upgrades=False, ping_interval=1800, ping_terminate=300)
+sio = socketio.Server(async_mode='eventlet', allow_upgrades=False, ping_interval=1800, ping_terminate=300, cors_allowed_origins =['http://localhost:3000', 'http://localhost:3001'])
 app = socketio.WSGIApp(sio)
 
 @sio.event
