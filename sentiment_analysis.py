@@ -13,6 +13,8 @@ from eventlet.wsgi import server as Server
 import socketio
 import json
 from shutil import rmtree, make_archive
+# from geopy.geocoders import Nominatim
+# import pycountry as pyc
 
 class SentimentAnalysis:
     tweepy_auth = OAuthHandler(key.CONSUMER_KEY, key.CONSUMER_SECRET_KEY)
@@ -28,6 +30,7 @@ class SentimentAnalysis:
         }
         self.search_key = ''
         self.tweet_count = 0
+        # self.geolocator =  Nominatim(user_agent='sentimental_analysis')
     
     # https://stackoverflow.com/questions/4770297/convert-utc-datetime-string-to-local-datetime
     def datetime_from_utc_to_local(self, utc_datetime):
@@ -73,6 +76,18 @@ class SentimentAnalysis:
         self.create_directories()
         self.fetch_tweets()
     
+    def emoticon_cleaning(self, text):
+        text = text.decode('utf-8')
+        regrex_pattern = re.compile(pattern = "["
+            u"\U0001F600-\U0001F64F"  # emoticons
+            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+            u"\U0001F680-\U0001F6FF"  # transport & map symbols
+            u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                            "]+", flags = re.UNICODE)
+        cleaned_text = regrex_pattern.sub(r'', text)
+
+        return cleaned_text
+
     def tweet_cleaning(self, text):
         regrex_pattern = re.compile(pattern = "["
             u"\U0001F600-\U0001F64F"  # emoticons
@@ -80,7 +95,6 @@ class SentimentAnalysis:
             u"\U0001F680-\U0001F6FF"  # transport & map symbols
             u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
                             "]+", flags = re.UNICODE)
-
         clean_tweet = text.decode('utf-8')
         clean_tweet = re.sub(r'^RT[\s]+','', clean_tweet)
         clean_tweet = re.sub(r'https?:\/\/.*[\r\n]*', '', clean_tweet)
@@ -135,6 +149,24 @@ class SentimentAnalysis:
         }
         sio.emit('response', data=json.dumps(data), to=self.session_id)
         # sio.sleep(0)
+
+    # def get_country_code(self, location):
+    #     if location == None:
+    #         return None
+        
+    #     location = self.geolocator.geocode(location, language='en')
+    #     if location == None:
+    #         return None
+            
+    #     location = str(location)
+    #     places_arr = location.split(',')
+    #     country_name = places_arr[len(places_arr) - 1]
+    #     country_code = pyc.countries.get(name=country_name)
+
+    #     if country_code == None:
+    #         return country_code
+
+    #     return country_code.alpha_2
         
     def fetch_tweets(self):
         cursor = Cursor(SentimentAnalysis.tweepy_api.search, q=f'#{self.search_key} -filter:retweets',
@@ -153,7 +185,8 @@ class SentimentAnalysis:
                     'screen_name': tweet.user.screen_name,
                     'name': tweet.user.name,
                     'tweet_date': str(self.datetime_from_utc_to_local(tweet.created_at)),
-                    'location': tweet.user.location,
+                    'location': self.emoticon_cleaning(tweet.user.location.encode('utf-8')),
+                    # 'country_code': self.get_country_code(tweet.user.location.split(',')[0]),
                     'retweet_count': tweet.retweet_count,
                     'like_count': tweet.favorite_count,
                     'followers_count': tweet.user.followers_count,
@@ -161,6 +194,8 @@ class SentimentAnalysis:
                     'text': tweet.full_text or tweet.text,
                     'embed_url': f'https://twitter.com/{tweet.user.screen_name}/status/{tweet.id}'
                 }
+                if tweet.place != None:
+                    row['country_code'] = tweet.place.country_code
                 polarity, polarity_score = self.calc_polarity(row)
                 row['polarity'], row['polarity_score'] = polarity, polarity_score
                 new_rows = pd.DataFrame([row], index=[i])
