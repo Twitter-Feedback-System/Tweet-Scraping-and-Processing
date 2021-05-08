@@ -1,26 +1,34 @@
 import eventlet
 eventlet.monkey_patch()
 
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit
+from eventlet.wsgi import server as Server
+from shutil import rmtree, make_archive
 from tweepy import OAuthHandler, API, Cursor, TweepError, RateLimitError
 from textblob import TextBlob
-import pandas as pd
 from datetime import datetime
+from math import isnan
+import pandas as pd
 import time
 import os
 import re
-import keys_token as key
-from eventlet.wsgi import server as Server
-import socketio
 import json
-from shutil import rmtree, make_archive
+import keys_token as key
 # from geopy.geocoders import Nominatim
 # import pycountry as pyc
 
+# Initializing Flask and Socket-IO server
+app = Flask(__name__)
+sio = SocketIO(app, async_mode='eventlet', allow_upgrades=False, ping_interval=1800, ping_terminate=300, cors_allowed_origins=['http://localhost:3000', 'http://localhost:3001'])
+
 class SentimentAnalysis:
+    # static values for tweepy authentication
     tweepy_auth = OAuthHandler(key.CONSUMER_KEY, key.CONSUMER_SECRET_KEY)
     tweepy_auth.set_access_token(key.ACCESS_TOKEN, key.ACCESS_SECRET_TOKEN)
     tweepy_api = API(tweepy_auth, wait_on_rate_limit=False, wait_on_rate_limit_notify=False)
 
+    # initializing instance variables
     def __init__(self, session_id):
         self.session_id = session_id
         self.polarity = {
@@ -33,18 +41,21 @@ class SentimentAnalysis:
         # self.geolocator =  Nominatim(user_agent='sentimental_analysis')
     
     # https://stackoverflow.com/questions/4770297/convert-utc-datetime-string-to-local-datetime
+    # Converts date from utc to local zone
     def datetime_from_utc_to_local(self, utc_datetime):
         now_timestamp = time.time()
         offset = datetime.fromtimestamp(now_timestamp) - datetime.utcfromtimestamp(
             now_timestamp)
         return utc_datetime + offset
     
+    # Create directories, later used for creating zip
     def create_directories(self):
         os.mkdir(f'./{self.session_id}')
         os.mkdir(f'./{self.session_id}/images')
         os.mkdir(f'./{self.session_id}/images/top_users')
         os.mkdir(f'./{self.session_id}/images/trends')
     
+    # Save files, delete dir & create zip in archive dir
     def save_files(self, df):
         df = df.sort_values(by=['like_count', 'retweet_count', 'followers_count'], ascending=False)
         df.to_csv(path_or_buf=f'./{self.session_id}/{self.search_key}.csv')
@@ -69,13 +80,14 @@ class SentimentAnalysis:
 
         make_archive(base_name=f'./archive/{self.session_id}', format='zip', root_dir=f'./{self.session_id}')
         rmtree(f'./{self.session_id}')
-        
+
+    # Initialize search_key and tweet_count
     def process_requests(self, search_key, number):
         self.search_key = search_key
         self.tweet_count = number
-        self.create_directories()
         self.fetch_tweets()
     
+    # Clean emoticons
     def emoticon_cleaning(self, text):
         text = text.decode('utf-8')
         regrex_pattern = re.compile(pattern = "["
@@ -88,6 +100,7 @@ class SentimentAnalysis:
 
         return cleaned_text
 
+    # Text preprocessing (Tweet cleaning)
     def tweet_cleaning(self, text):
         regrex_pattern = re.compile(pattern = "["
             u"\U0001F600-\U0001F64F"  # emoticons
@@ -105,6 +118,7 @@ class SentimentAnalysis:
 
         return clean_tweet
 
+    # Decimal scaling of like and retweet count
     def scaling(self, arr):
         max_value = max(arr)
         j = len(str(max_value))
@@ -114,6 +128,7 @@ class SentimentAnalysis:
 
         return normalized_like, normalized_retweet
 
+    # Calculate polarity score
     def calc_polarity(self, data):
         text = data['text'].encode('utf-8')
         like_count = data['like_count']
@@ -137,6 +152,7 @@ class SentimentAnalysis:
 
         return polarity, polarity_score
     
+    # Send tweet infos back to client
     def send_response(self, tweet):
         data = {
             'header': {
@@ -147,7 +163,7 @@ class SentimentAnalysis:
                 'total_polarity': self.polarity 
             }
         }
-        sio.emit('response', data=json.dumps(data), to=self.session_id)
+        emit('response', json.dumps(data), to=self.session_id)
         # sio.sleep(0)
 
     # def get_country_code(self, location):
@@ -167,7 +183,8 @@ class SentimentAnalysis:
     #         return country_code
 
     #     return country_code.alpha_2
-        
+
+    # Fetch tweets, Send response & save zip
     def fetch_tweets(self):
         cursor = Cursor(SentimentAnalysis.tweepy_api.search, q=f'#{self.search_key} -filter:retweets',
                     count=100, tweet_mode='extended', lang='en').items(self.tweet_count)
@@ -210,36 +227,51 @@ class SentimentAnalysis:
             i = i + 1
         
         print('\nCompleted')
+        self.create_directories()
         self.save_files(df)
 
-sio = socketio.Server(async_mode='eventlet', allow_upgrades=False, ping_interval=1800, ping_terminate=300, cors_allowed_origins=['http://localhost:3000', 'http://localhost:3001'], )
-app = socketio.WSGIApp(sio)
+# sio = socketio.Server(async_mode='eventlet', allow_upgrades=False, ping_interval=1800, ping_terminate=300, cors_allowed_origins=['http://localhost:3000', 'http://localhost:3001'], )
+# app = socketio.WSGIApp(sio)
 
-@sio.event
-def connect(sid, environ):
-    print(sid, 'CONNECTED')
+# Connect hanndler for socket
+@sio.on('connect')
+def connect():
+    print(request.sid, 'CONNECTED')
     data = {
         'header': {
             'type': 'GET_SESSION'
         },
         'body': {
-            'session_id': sid
+            'session_id': request.sid
         }
     }
-    sio.emit('response', data=json.dumps(data), to=sid)
+    emit('response', json.dumps(data), to=request.sid)
 
-@sio.event
-def disconnect(sid):
-    print(sid, 'DISCONNECTED')
-    os.remove(f'./archive/{sid}.zip')
+# Disconnect hanndler for socket
+@sio.on('disconnect')
+def disconnect():
+    print(request.sid, 'DISCONNECTED')
+    os.remove(f'./archive/{request.sid}.zip')
 
+# Request hanndler for socket
 @sio.on('request') 
-def request(sid, data):
+def request_func(data):
     data = json.loads(data)
     if data['header']['type'] == 'GET':
-        key, num = data['body']['search_key'], data['body']['tweet_count']
-        senti_analysis = SentimentAnalysis(sid)
-        senti_analysis.process_requests(key, num)
+        search_key, tweet_count = data['body']['search_key'], data['body']['tweet_count']
+        if not isnan(tweet_count) and tweet_count >= 200 and tweet_count <= 2000:
+            senti_analysis = SentimentAnalysis(request.sid)
+            senti_analysis.process_requests(search_key, tweet_count)
+        else:
+            data = {
+                'header': {
+                    'type': 'ERROR_INVALID_TWEET_COUNT',
+                    'message': 'Error: Can\'t request less than 200 and more than 2000 tweets' 
+                }
+            }
+            emit('response', json.dumps(data), to=request.sid)
 
-Server(eventlet.listen(('localhost', 8000)), app)
-
+if __name__ == '__main__':    
+    # app = sio.Middleware(sio, app)
+    # Start server
+    Server(eventlet.listen(('localhost', 8000)), app)
